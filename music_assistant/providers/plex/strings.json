@@ -78,6 +78,17 @@
       "description": "Clear the current authentication details.",
       "action_label": "Clear authentication"
     },
+    "home_user": {
+      "label": "Plex Home user",
+      "description": "Play and sync as this Plex Home user instead of the account you signed in with.",
+      "options": {
+        "account": "Signed-in account (no Plex Home user)"
+      }
+    },
+    "home_user_pin": {
+      "label": "Plex Home PIN",
+      "description": "Only needed if the selected Plex Home user is protected by a PIN."
+    },
     "auth_method": {
       "label": "How do you want to sign in?",
       "options": {
@@ -102,6 +113,10 @@
       "title": "Sign in to Plex",
       "description": "Sign in with your Plex account in the window that opens to authorize Music Assistant."
     },
+    "home_user": {
+      "title": "Choose a Plex Home user",
+      "description": "Pick the Plex Home user Music Assistant should act as, or keep the account you signed in with."
+    },
     "finalizing_auth": {
       "progress_text": "Completing sign-in with Plex..."
     },
@@ -117,6 +132,8 @@
     }
   },
   "errors": {
+    "invalid_home_pin": "The Plex Home PIN was not accepted. Check the PIN and try again.",
+    "home_user_failed": "Could not switch to that Plex Home user. Try again or pick another user.",
     "no_libraries": "No compatible libraries were found on this Plex server.",
     "server_access_denied": "The Plex account you signed in with has no verified access to this Plex server. Check that the server is shared with this account, then sign in again."
   },

@@ -66,3 +66,6 @@ ERR_ARTIST_NOT_FOUND = "Artist not found: {item_id}"
 ERR_TRACK_NOT_FOUND = "Track {item_id} not found"
 ERR_ARTIST_INVALID_ID = "Artist does not have a valid ID"
 ERR_NO_ARTIST_FOR_TRACK = "No artist was found for track"
+
+CONF_HOME_USER = "home_user"
+CONF_HOME_USER_PIN = "home_user_pin"

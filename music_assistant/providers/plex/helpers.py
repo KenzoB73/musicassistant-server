@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, cast
 import requests
 from music_assistant_models.enums import ImageType, MediaType, ProviderFeature
 from music_assistant_models.media_items import MediaItemImage, UniqueList
-from plexapi.exceptions import PlexApiException
+from plexapi.exceptions import PlexApiException, Unauthorized
 from plexapi.gdm import GDM
 from plexapi.library import LibrarySection as PlexLibrarySection
 from plexapi.library import MusicSection as PlexMusicSection
@@ -146,6 +146,57 @@ def extract_library_name(conf_value: str) -> str:
 
 class PlexServerAccessError(Exception):
     """The signed-in Plex account has no verified access token for the Plex server."""
+
+
+class PlexHomeUserError(Exception):
+    """Switching to a Plex Home user failed (unknown user or wrong PIN)."""
+
+    def __init__(self, message: str, *, invalid_pin: bool = False) -> None:
+        """Initialize the error; invalid_pin marks a rejected Plex Home PIN."""
+        super().__init__(message)
+        self.invalid_pin = invalid_pin
+
+
+def list_home_users(auth_token: str) -> list[tuple[str, bool]]:
+    """
+    Return the Plex Home users of the account as (title, has_pin) tuples.
+
+    Blocking IO: run in an executor thread.
+
+    :param auth_token: The account-level MyPlex token of the Plex Home admin.
+    """
+    account = MyPlexAccount(token=auth_token)
+    return [(user.title, bool(user.protected)) for user in account.users() if user.home]
+
+
+def switch_to_home_user(auth_token: str, user_title: str, pin: str | None = None) -> str:
+    """
+    Return the MyPlex token of the given Plex Home user.
+
+    Uses plex.tv's Plex Home switch endpoint (MyPlexAccount.switchHomeUser), the same call
+    the official Plex apps make when you pick a profile, so media is played and reported
+    (play counts, ratings, playlists) as that user instead of the Plex Home admin.
+
+    Blocking IO: run in an executor thread.
+
+    :param auth_token: The account-level MyPlex token of the Plex Home admin.
+    :param user_title: The display name of the Plex Home user to switch to.
+    :param pin: The Plex Home PIN of that user, if it has one.
+    :raises PlexHomeUserError: The user does not exist or the PIN was rejected.
+    """
+    account = MyPlexAccount(token=auth_token)
+    user = next((u for u in account.users() if u.home and u.title == user_title), None)
+    if user is None:
+        raise PlexHomeUserError(f"Plex Home user '{user_title}' was not found")
+    try:
+        switched = account.switchHomeUser(user, pin=pin or None)
+    except Unauthorized as err:
+        raise PlexHomeUserError("The Plex Home PIN was rejected", invalid_pin=True) from err
+    except PlexApiException as err:
+        raise PlexHomeUserError(f"Could not switch to Plex Home user '{user_title}'") from err
+    if not switched.authToken:
+        raise PlexHomeUserError("plex.tv returned no token for the Plex Home user")
+    return str(switched.authToken)
 
 
 def resolve_server_auth_token(

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
+from plexapi.exceptions import PlexApiException
 from plexapi.myplex import MyPlexPinLogin
 
 from music_assistant.models.setup_flow import AbortFlow, SetupFlowError
@@ -14,6 +15,8 @@ from music_assistant.models.setup_flow import AbortFlow, SetupFlowError
 from .constants import (
     AUTH_TOKEN_UNAUTH,
     CONF_AUTH_TOKEN,
+    CONF_HOME_USER,
+    CONF_HOME_USER_PIN,
     CONF_LIBRARY_ID,
     CONF_LOCAL_SERVER_IP,
     CONF_LOCAL_SERVER_PORT,
@@ -21,6 +24,9 @@ from .constants import (
     CONF_LOCAL_SERVER_VERIFY_CERT,
 )
 from .helpers import (
+    PlexHomeUserError,
+    list_home_users,
+    switch_to_home_user,
     CONF_LIBRARY_TYPE,
     LIBRARY_TYPE_AUDIOBOOKS,
     LIBRARY_TYPE_MUSIC,
@@ -40,6 +46,7 @@ if TYPE_CHECKING:
 
 AUTH_METHOD_MYPLEX = "myplex"
 AUTH_METHOD_LOCAL = "local"
+HOME_USER_ACCOUNT = "account"  # sentinel: stay signed in as the account itself
 
 
 async def run_setup(session: SetupSession) -> None:
@@ -192,18 +199,82 @@ async def _authenticate(session: SetupSession) -> str:
         return AUTH_TOKEN_UNAUTH
     plex_auth = MyPlexPinLogin(headers={"X-Plex-Product": "Music Assistant"}, oauth=True)
     await asyncio.to_thread(plex_auth._getCode)
-    auth_url = plex_auth.oauthUrl(session.callback_url)
-    # the callback is only a "user came back" signal; the token is fetched by polling
-    await session.external(auth_url, step_id="myplex_auth", expires_in=600)
-    token = await session.progress_until(
-        _poll_myplex_token(plex_auth),
-        step_id="finalizing_auth",
-        text="finalizing_auth",
-        expires_in=45,
+    auth_url = plex_auth.oauthUrl()
+    # no browser callback needed: the token is obtained by polling plex.tv
+    token = await session.external_until(
+        _wait_myplex_token(plex_auth),
+        auth_url,
+        step_id="myplex_auth",
+        expires_in=600,
     )
     if not token:
         raise AbortFlow("myplex_auth_failed")
-    return token
+    return await _select_home_user(session, token)
+
+
+async def _select_home_user(session: SetupSession, token: str) -> str:
+    """
+    Optionally switch the signed-in account to one of its Plex Home users.
+
+    Without this step the connection always runs as the signed-in account (normally the Plex
+    Home admin), so play counts, ratings and playlists land on the admin. The step is skipped
+    when the account has no Plex Home users (or they can't be listed), keeping the old flow.
+
+    :param session: The setup session driving the flow.
+    :param token: The account-level MyPlex token obtained from the sign-in.
+    """
+    try:
+        home_users = await asyncio.to_thread(list_home_users, token)
+    except PlexApiException:
+        return token
+    if not home_users:
+        return token
+    errors: dict[str, str | SetupFlowError] | None = None
+    while True:
+        values = await session.form(
+            [
+                ConfigEntry(
+                    key=CONF_HOME_USER,
+                    type=ConfigEntryType.STRING,
+                    required=True,
+                    default_value=HOME_USER_ACCOUNT,
+                    options=[
+                        ConfigValueOption(value=HOME_USER_ACCOUNT),
+                        *(
+                            ConfigValueOption(
+                                title=f"{title} (PIN)" if protected else title, value=title
+                            )
+                            for title, protected in home_users
+                        ),
+                    ],
+                ),
+                ConfigEntry(
+                    key=CONF_HOME_USER_PIN,
+                    type=ConfigEntryType.SECURE_STRING,
+                    required=False,
+                ),
+            ],
+            step_id="home_user",
+            errors=errors,
+        )
+        selected = str(values[CONF_HOME_USER])
+        if selected == HOME_USER_ACCOUNT:
+            return token
+        pin = values.get(CONF_HOME_USER_PIN)
+        try:
+            return await asyncio.to_thread(
+                switch_to_home_user, token, selected, str(pin) if pin else None
+            )
+        except PlexHomeUserError as err:
+            errors = {"base": "invalid_home_pin" if err.invalid_pin else "home_user_failed"}
+
+
+async def _wait_myplex_token(plex_auth: MyPlexPinLogin) -> str | None:
+    """Poll plex.tv every 2 seconds until the PIN is linked (bounded by the step deadline)."""
+    while True:
+        if await asyncio.to_thread(plex_auth.checkLogin):
+            return str(plex_auth.token) if plex_auth.token else None
+        await asyncio.sleep(2)
 
 
 async def _poll_myplex_token(plex_auth: MyPlexPinLogin) -> str | None:
